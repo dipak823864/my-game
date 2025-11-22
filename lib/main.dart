@@ -1,72 +1,73 @@
+import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
-import 'models.dart';
-import 'editor_canvas.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:my_editor/game/drishya_game.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: DrishyaApp()));
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class DrishyaApp extends ConsumerStatefulWidget {
+  const DrishyaApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Pro Editor',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(),
-      home: const EditorPage(),
-    );
-  }
+  ConsumerState<DrishyaApp> createState() => _DrishyaAppState();
 }
 
-class EditorPage extends StatefulWidget {
-  const EditorPage({super.key});
-
-  @override
-  State<EditorPage> createState() => EditorPageState();
-}
-
-@visibleForTesting
-class EditorPageState extends State<EditorPage> {
-  late EditorComposition composition;
+class _DrishyaAppState extends ConsumerState<DrishyaApp> {
+  late DrishyaGame game;
 
   @override
   void initState() {
     super.initState();
-    composition = EditorComposition(
-      dimension: const Size(1080, 1080),
-      backgroundColor: Colors.white,
-      layers: [
-        TextLayer(
-          id: '1',
-          text: 'Smart Text Editor',
-          position: Offset.zero,
-          style: const TextStyle(
-            fontSize: 50,
-            color: Colors.black,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        TextLayer(
-          id: '2',
-          text: 'Double Tap Me!',
-          position: const Offset(0, 200),
-          rotation: -0.1,
-          style: const TextStyle(fontSize: 40, color: Colors.purple),
-        ),
-      ],
-    );
+    game = DrishyaGame(ref);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Advanced Editor Engine"),
-        backgroundColor: Colors.black,
+    return MaterialApp(
+      home: Scaffold(
+        body: Stack(
+          children: [
+            // Game Widget
+            GameWidget(game: game),
+
+            // UI Overlay
+            Positioned(
+              top: 40,
+              right: 20,
+              child: ElevatedButton(
+                onPressed: () {
+                  game.toggleAI();
+                  setState(() {}); // Rebuild to show status change if we wanted to update UI text
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: game.isAIActive ? Colors.green : Colors.red,
+                ),
+                child: Text(
+                  game.isAIActive ? "AI: ACTIVE" : "AI: OFF",
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+
+            // Title
+            const Positioned(
+              top: 40,
+              left: 20,
+              child: Text(
+                "Drishya: The Eternal Path",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  shadows: [Shadow(blurRadius: 10, color: Colors.black)],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
-      body: EditorCanvas(composition: composition),
     );
   }
 }
