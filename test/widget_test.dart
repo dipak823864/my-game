@@ -1,74 +1,67 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart'; // For kDoubleTapTimeout
 import 'package:flutter_test/flutter_test.dart';
-import 'package:my_editor/main.dart';
 import 'package:my_editor/editor_canvas.dart';
 import 'package:my_editor/models.dart';
+import 'dart:convert';
 
 void main() {
-  testWidgets('Editor Core Interaction Test', (WidgetTester tester) async {
-    // 1. Load the MyApp
-    await tester.pumpWidget(const MyApp());
-    await tester.pump(); // Frame
+  testWidgets('Headless Game Test - JSON to Physics', (WidgetTester tester) async {
+    // 1. Define the game state purely as JSON
+    // A rectangle with velocity moving to the right
+    final jsonString = '''
+    {
+      "width": 800,
+      "height": 600,
+      "backgroundColor": 4294967295,
+      "layers": [
+        {
+          "type": "rectangle",
+          "id": "rect-1",
+          "color": 4294901760,
+          "width": 100,
+          "height": 100,
+          "x": 0,
+          "y": 0,
+          "vx": 100,
+          "vy": 0,
+          "rotation": 0,
+          "scale": 1
+        }
+      ]
+    }
+    ''';
 
-    // 2. Find the CustomPaint
-    final gestureDetectorFinder = find.descendant(
-      of: find.byType(EditorCanvas),
-      matching: find.byType(GestureDetector),
-    );
-    expect(gestureDetectorFinder, findsOneWidget);
-
-    final customPaintFinder = find.descendant(
-      of: gestureDetectorFinder,
-      matching: find.byType(CustomPaint),
-    );
-    expect(customPaintFinder, findsOneWidget);
-
-    // 3. Access the state
-    final editorPageFinder = find.byType(EditorPage);
-    expect(editorPageFinder, findsOneWidget);
-    final EditorPageState editorPageState = tester.state(editorPageFinder);
-    final composition = editorPageState.composition;
+    // 2. Initialize Engine State
+    final Map<String, dynamic> jsonData = jsonDecode(jsonString);
+    final composition = EditorComposition.fromJson(jsonData);
 
     // Verify initial state
-    expect(composition.layers.length, 2);
-    final textLayer1 = composition.layers[0] as TextLayer;
+    final rectLayer = composition.layers[0] as RectangleLayer;
+    expect(rectLayer.position.dx, 0.0);
+    expect(rectLayer.velocity.dx, 100.0);
 
-    // 4. Simulate a Tap to select the layer
-    await tester.tap(customPaintFinder);
-    await tester.pump(); // Process the tap event
-
-    // Because onDoubleTapDown is present, GestureDetector waits to ensure it's not a double tap.
-    await tester.pump(kDoubleTapTimeout);
-
-    // Verify that tapping on a layer selects it
-    expect(
-      textLayer1.isSelected,
-      true,
-      reason: "Layer should be selected after tap",
+    // 3. Build the Game Widget
+    // We need to pump it to start the Ticker
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: EditorCanvas(composition: composition),
+        ),
+      ),
     );
 
-    // 5. Simulate a Drag
-    // Use tester.drag which is higher level and reliable
-    await tester.drag(customPaintFinder, const Offset(50, 50));
-    await tester.pump();
+    // 4. Simulate passage of time
+    // We pump for 1 second (1000ms).
+    // The physics engine should update position = position + velocity * dt
+    // new_x = 0 + 100 * 1.0 = 100
+    await tester.pump(const Duration(seconds: 1));
 
-    // Pump enough time for any pending double-tap timers from the drag start to expire
-    await tester.pump(kDoubleTapTimeout);
+    // 5. Assert Game State Updated
+    // We allow a small epsilon because Ticker might not be exactly precise down to the microsecond in tests
+    expect(rectLayer.position.dx, closeTo(100.0, 5.0));
 
-    // 6. Verify via logic/math that the layer's position has indeed updated
-    // Initial position was Offset.zero
-    // We expect the position to have changed significantly in the direction of drag.
-    // Exact pixel value depends on scaling, so we check it's > 0.
-    expect(
-      textLayer1.position.dx,
-      greaterThan(1.0),
-      reason: "Layer X position should update after drag",
-    );
-    expect(
-      textLayer1.position.dy,
-      greaterThan(1.0),
-      reason: "Layer Y position should update after drag",
-    );
+    // Optional: Simulate another second
+    await tester.pump(const Duration(seconds: 1));
+    expect(rectLayer.position.dx, closeTo(200.0, 5.0));
   });
 }
