@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart' show Vector3;
 import 'dart:math' as math;
 import 'dart:async';
+import 'package:flutter/scheduler.dart';
 import 'models.dart';
 
 // મોબાઈલ માટે ટચ એરિયા મોટો રાખવો પડે (45px જેવો)
@@ -27,7 +28,8 @@ class EditorCanvas extends StatefulWidget {
   State<EditorCanvas> createState() => _EditorCanvasState();
 }
 
-class _EditorCanvasState extends State<EditorCanvas> {
+class _EditorCanvasState extends State<EditorCanvas>
+    with SingleTickerProviderStateMixin {
   BaseLayer? activeLayer;
   HandleType _currentHandle = HandleType.none;
 
@@ -46,14 +48,79 @@ class _EditorCanvasState extends State<EditorCanvas> {
 
   bool _isTextSelectionDragging = false;
 
+  late Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
+
   @override
   void initState() {
     super.initState();
     _textController.addListener(_syncControllerToLayer);
+    _ticker = createTicker(_gameLoop);
+    _ticker.start();
   }
+
+  void _gameLoop(Duration elapsed) {
+    if (_lastElapsed == Duration.zero) {
+      _lastElapsed = elapsed;
+      return;
+    }
+
+    final double dt = (elapsed - _lastElapsed).inMicroseconds / 1000000.0;
+    _lastElapsed = elapsed;
+
+    _update(dt);
+  }
+
+  void _update(double dt) {
+    bool stateChanged = false;
+
+    // 1. Update Physics
+    for (var layer in widget.composition.layers) {
+      if (layer.velocity != Offset.zero) {
+        layer.position += layer.velocity * dt;
+        stateChanged = true;
+      }
+    }
+
+    // 2. Check Collisions
+    // Basic AABB / Radius check depending on types, but let's stick to simple overlap logic for now
+    // We will just print or maybe change color if collision happens to demonstrate
+    for (int i = 0; i < widget.composition.layers.length; i++) {
+      for (int j = i + 1; j < widget.composition.layers.length; j++) {
+        if (_checkCollision(
+          widget.composition.layers[i],
+          widget.composition.layers[j],
+        )) {
+          // Collision detected
+          // Ideally we would trigger an event or handle physics response
+          // For this task, we just ensure the engine detects it.
+        }
+      }
+    }
+
+    if (stateChanged) {
+      setState(() {});
+    }
+  }
+
+  bool _checkCollision(BaseLayer a, BaseLayer b) {
+    // AABB Collision for simplicity
+    // Calculate bounding boxes in global space
+    // Note: This ignores rotation for simplicity in this basic engine step,
+    // but robust engines would use OBB or SAT.
+
+    final Rect rectA = Rect.fromCenter(
+        center: a.position, width: a.size.width * a.scale, height: a.size.height * a.scale);
+    final Rect rectB = Rect.fromCenter(
+        center: b.position, width: b.size.width * b.scale, height: b.size.height * b.scale);
+
+    return rectA.overlaps(rectB);
+  }
+
 
   @override
   void dispose() {
+    _ticker.dispose();
     _textController.removeListener(_syncControllerToLayer);
     _textFocusNode.dispose();
     _textController.dispose();
@@ -182,19 +249,14 @@ class _EditorCanvasState extends State<EditorCanvas> {
     return Offset(dx, dy);
   }
 
-  /// **Global Space Hit Testing (The Fix for "Shrinking Hit Box")**
-  /// આપણે હેન્ડલ્સને સ્ક્રીન પર ક્યાં છે તે શોધીએ છીએ અને પછી ચેક કરીએ છીએ.
   HandleType _getHandleAtPoint(BaseLayer layer, Offset globalTouch) {
-    // લેયરની સાઈઝ
+    if (!layer.isSelected) return HandleType.none; // Only check handles if selected
+
     final halfW = layer.size.width / 2;
     final halfH = layer.size.height / 2;
 
-    // લેયરનું મેટ્રિક્સ
     final matrix = layer.matrix;
 
-    // હેન્ડલ્સના Local Coordinates
-    // (rotationHandleDistance અને handleRadius models.dart માંથી આવે છે)
-    // આપણે models.dart માં CamelCase કર્યું હતું, તે અહીં વાપરવું.
     final localMap = {
       HandleType.topLeft: Offset(-halfW, -halfH),
       HandleType.topRight: Offset(halfW, -halfH),
@@ -206,21 +268,16 @@ class _EditorCanvasState extends State<EditorCanvas> {
       ),
     };
 
-    // હેન્ડલ્સ ચેક કરો (Global Space માં)
     for (var entry in localMap.entries) {
       final localPos = entry.value;
-      // Local Point ને Global Matrix થી ટ્રાન્સફોર્મ કરો
       final globalVec = matrix.transform3(Vector3(localPos.dx, localPos.dy, 0));
       final globalPos = Offset(globalVec.x, globalVec.y);
 
-      // હવે Distance ચેક કરો. આ TOUCH_TOLERANCE ફિક્સ છે (30px).
-      // લેયર નાનું હોય તો પણ આ 30px જ રહેશે.
       if ((globalTouch - globalPos).distance <= TOUCH_TOLERANCE) {
         return entry.key;
       }
     }
 
-    // Body Check (આના માટે Inverse Matrix બરાબર છે)
     if (_isPointInsideLayer(layer, globalTouch)) {
       return HandleType.body;
     }
@@ -238,8 +295,6 @@ class _EditorCanvasState extends State<EditorCanvas> {
     final halfW = layer.size.width / 2;
     final halfH = layer.size.height / 2;
     final rect = Rect.fromLTRB(-halfW, -halfH, halfW, halfH);
-    // Body Hit Test માટે થોડું પેડિંગ આપો જેથી પકડવામાં સરળતા રહે
-    // Increased to TOUCH_TOLERANCE for better touch handling
     return rect
         .inflate(TOUCH_TOLERANCE / 2)
         .contains(Offset(point3.x, point3.y));
@@ -250,18 +305,24 @@ class _EditorCanvasState extends State<EditorCanvas> {
   void _handleTouchStart(Offset localPoint) {
     HandleType foundHandle = HandleType.none;
 
-    // પહેલા Active Layer પર હેન્ડલ્સ ચેક કરો
-    if (activeLayer != null) {
+    // First check handles on active layer
+    if (activeLayer != null && activeLayer!.isSelected) {
       foundHandle = _getHandleAtPoint(activeLayer!, localPoint);
     }
 
+    // Check if we hit the body of active layer but no specific handle
+    if (activeLayer != null && foundHandle == HandleType.none) {
+        if (_isPointInsideLayer(activeLayer!, localPoint)) {
+            foundHandle = HandleType.body;
+        }
+    }
+
+
     // SMART EDITING LOGIC
     if (activeLayer is TextLayer && activeLayer!.isEditing) {
-      // જો ખૂણો કે રોટેશન પકડ્યું છે -> Allow
       if (foundHandle != HandleType.none && foundHandle != HandleType.body) {
-        // Pass through to math init below
+        // Pass
       }
-      // જો બોડી પકડી છે -> Text Selection Drag (Move નહિ)
       else if (_isPointInsideLayer(activeLayer!, localPoint)) {
         _isTextSelectionDragging = true;
         final index = _getTextIndexFromTouch(
@@ -286,28 +347,29 @@ class _EditorCanvasState extends State<EditorCanvas> {
             _deselectAll();
             clickedLayer.isSelected = true;
             activeLayer = clickedLayer;
-          }
-          if (!clickedLayer.isEditing) {
+            // Re-check handle on newly selected layer just in case, though body is likely
             foundHandle = HandleType.body;
           }
         });
+      } else {
+        // Deselect if clicked empty space
+         setState(() {
+            _stopEditing();
+            _deselectAll();
+            activeLayer = null;
+         });
       }
     }
 
-    // --- FIX: Rotation & Scaling Math ---
     if (activeLayer != null) {
       _initialRotationLayer = activeLayer!.rotation;
 
-      // રોટેશન ગણતરી લેયરના સેન્ટર (Position) થી થવી જોઈએ
       _initialRotationTouch = math.atan2(
         localPoint.dy - activeLayer!.position.dy,
         localPoint.dx - activeLayer!.position.dx,
       );
 
       _initialScale = activeLayer!.scale;
-
-      // સ્કેલિંગ ગણતરી પણ લેયરના સેન્ટરથી થવી જોઈએ (Distance from Object Center)
-      // જૂના કોડમાં Screen Center થી થતી હતી જે ભૂલ હતી
       _initialDistance = (localPoint - activeLayer!.position).distance;
     }
 
@@ -347,26 +409,22 @@ class _EditorCanvasState extends State<EditorCanvas> {
             final delta = localPoint - _lastTouchLocalPoint!;
             activeLayer!.position += delta;
           }
-          // Move માટે આપણે last point અપડેટ કરીએ છીએ
           _lastTouchLocalPoint = localPoint;
           break;
 
         case HandleType.rotate:
-          // Rotation relative to Object Center
           final currentTouchAngle = math.atan2(
             localPoint.dy - activeLayer!.position.dy,
             localPoint.dx - activeLayer!.position.dx,
           );
           final angleDelta = currentTouchAngle - _initialRotationTouch!;
           activeLayer!.rotation = _initialRotationLayer! + angleDelta;
-          // Rotate/Scale માં last point અપડેટ કરવાની જરૂર નથી હોતી કારણ કે આપણે initial થી ગણીએ છીએ
           break;
 
         case HandleType.bottomRight:
         case HandleType.topRight:
         case HandleType.bottomLeft:
         case HandleType.topLeft:
-          // Scaling relative to Object Center
           final currentDist = (localPoint - activeLayer!.position).distance;
           if (_initialDistance != null && _initialDistance! > 0) {
             final scaleFactor = currentDist / _initialDistance!;
@@ -415,7 +473,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
   }
 
   void _handleTap(Offset localPoint) {
-    if (activeLayer != null) {
+    if (activeLayer != null && activeLayer!.isSelected) {
       final handle = _getHandleAtPoint(activeLayer!, localPoint);
       if (handle != HandleType.none && handle != HandleType.body) return;
     }
@@ -480,8 +538,9 @@ class _EditorCanvasState extends State<EditorCanvas> {
   }
 
   BaseLayer? _findLayerAt(Offset globalTouch) {
+    // Check from top to bottom
     for (var layer in widget.composition.layers.reversed) {
-      if (_getHandleAtPoint(layer, globalTouch) != HandleType.none)
+      if (_isPointInsideLayer(layer, globalTouch))
         return layer;
     }
     return null;
@@ -518,16 +577,22 @@ class _EditorCanvasState extends State<EditorCanvas> {
   }
 
   void _updateCursor(Offset localPoint) {
-    if (activeLayer == null) {
+    if (activeLayer == null || !activeLayer!.isSelected) {
+      // Check if hovering over any layer
+       if (_findLayerAt(localPoint) != null) {
+           // Maybe show pointer if we can select something?
+       }
       setState(() => _cursor = SystemMouseCursors.basic);
       return;
     }
+
     if (activeLayer is TextLayer && activeLayer!.isEditing) {
       if (_isPointInsideLayer(activeLayer!, localPoint)) {
         setState(() => _cursor = SystemMouseCursors.text);
         return;
       }
     }
+
     final handle = _getHandleAtPoint(activeLayer!, localPoint);
     SystemMouseCursor newCursor = SystemMouseCursors.basic;
     switch (handle) {
